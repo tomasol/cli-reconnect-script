@@ -5,17 +5,16 @@ use std::time::Duration;
 use std::thread;
 use std::str;
 
-fn mount(idx: u32) {
-    let device = format!("ME_CLI_{}", idx);
+fn mount() {
     let output = Command::new("curl")
         .args(&[
             "-v", "-H", "Content-Type: application/json",
-            &format!("admin:admin@localhost:8181/restconf/config/network-topology:network-topology/topology/cli/node/{}", device),
+            "admin:admin@localhost:8181/restconf/config/network-topology:network-topology/topology/cli/node/ME_CLI",
             "-X", "PUT", "-d",
-            &(r#"{
+            r#"{
                 "network-topology:node" :
                 {
-                  "network-topology:node-id" : ""#.to_owned() + &device + r#"",
+                  "network-topology:node-id" : "ME_CLI",
                   "cli-topology:host" : "192.168.1.223",
                   "cli-topology:port" : "23",
                   "cli-topology:transport-type" : "telnet",
@@ -28,7 +27,7 @@ fn mount(idx: u32) {
                   "cli-topology:dry-run-journal-size": 150,
                   "cli-topology:keepalive-timeout" : 180
                 }
-            }"#)
+            }"#
         ])
         .output();
     let output = output.unwrap();
@@ -38,8 +37,8 @@ fn mount(idx: u32) {
         output
     );
     let stdout = str::from_utf8(&output.stdout).unwrap();
-    debug!("[{}] mount stdout: {}", idx, stdout);
-    info!("[{}] mount ok", idx);
+    debug!("mount stdout: {}", stdout);
+    info!("mount ok");
 }
 
 // check that get oper does not contain IllegalStateException:
@@ -93,11 +92,11 @@ fn check_mount_status() {
     }
 }
 
-fn unmount(idx: u32) {
+fn unmount() {
     let output = Command::new("curl")
         .args(&[
             "-v", "-H", "Content-Type: application/json",
-            &format!("admin:admin@localhost:8181/restconf/config/network-topology:network-topology/topology/cli/node/ME_CLI_{}", idx),
+            "admin:admin@localhost:8181/restconf/config/network-topology:network-topology/topology/cli/node/ME_CLI",
             "-X", "DELETE"
         ])
         .output();
@@ -107,26 +106,21 @@ fn unmount(idx: u32) {
         "Operation mount failed. {:?}",
         output
     );
-    info!("[{}] unmount ok", idx);
+    info!("unmount ok");
 }
 
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
     let min_duration = Duration::from_millis(10_000);
     let max_duration = Duration::from_millis(15_000);
-    let max_devices = 1;
     loop {
         let mut sleep_duration = min_duration;
         while sleep_duration < max_duration {
             info!("Will sleep {}ms", sleep_duration.as_millis());
-            for idx in 0..max_devices {
-                mount(idx);
-            }
+            mount();
             thread::sleep(sleep_duration);
             check_mount_status();
-            for idx in 0..max_devices {
-                unmount(idx);
-            }
+            unmount();
             sleep_duration += Duration::from_millis(100);
         }
     }
