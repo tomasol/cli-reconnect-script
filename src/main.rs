@@ -1,9 +1,9 @@
 #[macro_use]
 extern crate log;
 use std::process::Command;
-use std::time::Duration;
-use std::thread;
 use std::str;
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 fn mount() {
     let output = Command::new("curl")
@@ -36,60 +36,77 @@ fn mount() {
         "Operation mount failed. {:?}",
         output
     );
-    let stdout = str::from_utf8(&output.stdout).unwrap();
-    debug!("mount stdout: {}", stdout);
     info!("mount ok");
 }
 
-// check that get oper does not contain IllegalStateException:
-/*
-{
-    "network-topology": {
-        "topology": [
-            {
-                "topology-id": "cli",
-                "node": [
-                    {
-                        "node-id": "ME_CLI",
-                        "cli-topology:connection-status": "unable-to-connect",
-                        "cli-topology:connected-message": "Unable to expose mountpoint: java.lang.IllegalStateException: Mount point already exists",
-                        "cli-topology:default-error-patterns": {
-                            "error-pattern": [
-                                "(^|\\n)% (?i)Ambiguous command(?-i).*",
-                                "(^|\\n)% (?i)invalid input(?-i).*",
-                                "(^|\\n)% (?i)Incomplete command(?-i).*",
-                                "(^|\\n)\\s+\\^.*"
-                            ]
-                        },
-                        "cli-topology:default-commit-error-patterns": {
-                            "commit-error-pattern": [
-                                "(^|\\n)% (?i)Failed(?-i).*"
-                            ]
-                        }
-                    }
-                ]
-            },
+enum WaitForPromptResult {
+    PromptResolved,
+    Timeout,
+}
 
-*/
-fn check_mount_status() {
-    let output = Command::new("curl")
+// Monitor log file. Wait until the prompt is resolved. Normally this ends in ~10s.
+// Sequenced messages:
+// "Prompt resolved"
+// "Exposing mountpoint under"
+// hopefully this state will not execute:
+// "Device successfully mounted" // too late
+fn wait_for_prompt() -> WaitForPromptResult {
+    let now = SystemTime::now();
+    let max_duration = Duration::from_secs(15);
+    while now.elapsed().unwrap() < max_duration {
+        let output = Command::new("tail")
         .args(&[
-            "-v", "-H", "Content-Type: application/json",
-            "admin:admin@localhost:8181/restconf/operational/network-topology:network-topology/topology/cli/",
-            "-X", "GET"
+            "-n", "20",
+            "/home/tomas/workspaces/frinx/odl/autorelease/distribution/distribution-karaf/target/assembly/data/log/karaf.log"
         ])
         .output();
-    let output = output.unwrap();
-    assert!(
-        output.status.success(),
-        "Operation mount failed. {:?}",
-        output
-    );
-    let stdout = str::from_utf8(&output.stdout).unwrap();
-    debug!("check_mount_status stdout: {}", stdout);
-    if stdout.contains("IllegalStateException") {
-        panic!("check_mount_status failed: {}", stdout);
+        let output = output.unwrap();
+        assert!(output.status.success(), "tail failed. {:?}", output);
+        let stdout = str::from_utf8(&output.stdout).unwrap();
+        trace!("wait_for_prompt stdout: {}", stdout);
+        if stdout.contains("Prompt resolved") {
+            info!("wait_for_prompt - PromptResolved");
+            return WaitForPromptResult::PromptResolved;
+        }
+        thread::sleep(Duration::from_millis(10));
     }
+    info!("wait_for_prompt - Timeout");
+    return WaitForPromptResult::Timeout;
+}
+
+#[derive(Debug)]
+enum AfterSleepLogResult {
+    PromptResolved,
+    ExposingMountpointUnder,
+    DeviceSuccessfullyMounted,
+    MountPointAlreadyExistsFailure,
+    Unknown,
+}
+
+fn check_logs_after_sleep() -> AfterSleepLogResult {
+    let output = Command::new("tail")
+    .args(&[
+        "-n", "50",
+        "/home/tomas/workspaces/frinx/odl/autorelease/distribution/distribution-karaf/target/assembly/data/log/karaf.log"
+    ])
+    .output();
+    let output = output.unwrap();
+    assert!(output.status.success(), "tail failed. {:?}", output);
+    let stdout = str::from_utf8(&output.stdout).unwrap();
+    trace!("check_logs_after_sleep stdout: {}", stdout);
+    let result = if stdout.contains("Mount point already exists") {
+        AfterSleepLogResult::MountPointAlreadyExistsFailure
+    } else if stdout.contains("Device successfully mounted") {
+        AfterSleepLogResult::DeviceSuccessfullyMounted
+    } else if stdout.contains("Exposing mountpoint under") {
+        AfterSleepLogResult::ExposingMountpointUnder
+    } else if stdout.contains("Prompt resolved") {
+        AfterSleepLogResult::PromptResolved
+    } else {
+        AfterSleepLogResult::Unknown
+    };
+    debug!("check_logs_after_sleep - {:?}", result);
+    result
 }
 
 fn unmount() {
@@ -109,19 +126,57 @@ fn unmount() {
     info!("unmount ok");
 }
 
+fn healthcheck() -> bool {
+    if let WaitForPromptResult::PromptResolved = wait_for_prompt() {
+        let now = SystemTime::now();
+        let max_duration = Duration::from_secs(10);
+        while now.elapsed().unwrap() < max_duration {
+            match check_logs_after_sleep() {
+                AfterSleepLogResult::DeviceSuccessfullyMounted => {
+                    return true;
+                }
+                AfterSleepLogResult::MountPointAlreadyExistsFailure => {
+                    panic!("Found the error state");
+                }
+                _ => {}
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    return false;
+}
+
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-    let min_duration = Duration::from_millis(10_000);
-    let max_duration = Duration::from_millis(15_000);
+    let min_duration = Duration::from_millis(70);
+    let max_duration = Duration::from_millis(200); // automatically cut down
+
     loop {
         let mut sleep_duration = min_duration;
         while sleep_duration < max_duration {
-            info!("Will sleep {}ms", sleep_duration.as_millis());
-            mount();
-            thread::sleep(sleep_duration);
-            check_mount_status();
             unmount();
-            sleep_duration += Duration::from_millis(100);
+            mount();
+            if let WaitForPromptResult::PromptResolved = wait_for_prompt() {
+                info!("Will sleep {}ms", sleep_duration.as_millis());
+                thread::sleep(sleep_duration);
+                match check_logs_after_sleep() {
+                    AfterSleepLogResult::DeviceSuccessfullyMounted => {
+                        break;
+                    } // too late, restart
+                    AfterSleepLogResult::MountPointAlreadyExistsFailure => {
+                        panic!("Found the error state");
+                    }
+                    _ => {}
+                }
+            }
+            unmount();
+            info!("Executing healthcheck mount");
+            // another mount with long wait to make sure we did not enter the race on previous line
+            mount();
+            let healthcheck_result = healthcheck();
+            info!("Healthcheck passed?: {}", healthcheck_result);
+
+            sleep_duration += Duration::from_millis(10);
         }
     }
 }
