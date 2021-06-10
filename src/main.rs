@@ -44,7 +44,6 @@ fn mount() {
 #[derive(Debug)]
 enum LogResult {
     PromptResolved,
-    ExposingMountpointUnder,
     DeviceSuccessfullyMounted,
     Unknown,
 }
@@ -70,8 +69,6 @@ fn get_last_log() -> LogResult {
         panic!("Found the error state");
     } else if stdout.contains("Device successfully mounted") {
         LogResult::DeviceSuccessfullyMounted
-    } else if stdout.contains("Exposing mountpoint under") {
-        LogResult::ExposingMountpointUnder
     } else if stdout.contains("Prompt resolved") {
         LogResult::PromptResolved
     } else {
