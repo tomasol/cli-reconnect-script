@@ -5,7 +5,6 @@ use std::str;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-
 fn mount() {
     let output = Command::new("curl")
         .args(&[
@@ -25,7 +24,7 @@ fn mount() {
                   "cli-topology:password" : "ciscocisco",
                   "node-extension:reconcile": false,
                   "cli-topology:journal-size": 150,
-                  "cli-topology:dry-run-journal-size": 0,
+                  "cli-topology:dry-run-journal-size": 150,
                   "cli-topology:keepalive-timeout" : 180
                 }
             }"#
