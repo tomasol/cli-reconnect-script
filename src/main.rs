@@ -44,7 +44,7 @@ fn mount() {
     info!("mount ok");
 }
 
-fn unmount(tail: &mut Tail, level: log::Level) -> HashSet<LogResult> {
+fn unmount(tail: &mut Tail) -> HashSet<LogResult> {
     let output = Command::new("curl")
         .args(&[
             "-v", "-H", "Content-Type: application/json",
@@ -58,7 +58,6 @@ fn unmount(tail: &mut Tail, level: log::Level) -> HashSet<LogResult> {
         "Operation mount failed. {:?}",
         output
     );
-    log!(level, "unmount ok");
     get_last_log(tail)
 }
 
@@ -85,7 +84,9 @@ fn get_last_log(tail: &mut Tail) -> HashSet<LogResult> {
             };
         }
     }
-    trace!("get_last_log - {:?}", result);
+    if !result.is_empty() {
+        trace!("get_last_log - {:?}", result);
+    }
     result
 }
 
@@ -126,7 +127,7 @@ fn wait_for_unmount(tail: &mut Tail) -> bool {
     let now = SystemTime::now();
     let max_duration = Duration::from_secs(10);
     while now.elapsed().unwrap() < max_duration  {
-        if unmount(tail, log::Level::Debug).contains(&LogResult::OnDeviceDisconnected) {
+        if unmount(tail).contains(&LogResult::OnDeviceDisconnected) {
             info!("wait_for_unmount - ok");
             return true;
         }
@@ -158,6 +159,7 @@ impl Tail {
         // best effort check if the file was rolled back
         let new_length = self.file.stream_len()?;
         if new_length < self.last_length {
+            warn!("Detected logfile rollback, new length: {}, old length:{}", new_length, self.last_length);
             self.last_length = new_length;
             self.file.seek(io::SeekFrom::Start(0))?;
         }
@@ -171,6 +173,8 @@ fn main() -> io::Result<()> {
 
     let log_path = "/home/tomas/workspaces/frinx/odl/autorelease/distribution/distribution-karaf/target/assembly/data/log/karaf.log";
     let mut tail = Tail::new(log_path)?;
+    // discard old logs
+    get_last_log(&mut tail);
 
     let min_duration = Duration::from_secs(0);
     let max_duration = Duration::from_secs(2); // automatically cut down if successfully mounted
