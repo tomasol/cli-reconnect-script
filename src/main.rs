@@ -1,10 +1,8 @@
-#![feature(seek_stream_len)]
-
 #[macro_use]
 extern crate log;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufRead, Seek};
+use std::io::{self, BufRead};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -138,30 +136,29 @@ fn wait_for_unmount(tail: &mut Tail) -> bool {
 }
 
 #[derive(Debug)]
-struct Tail {
+struct Tail<'a> {
+    filename: &'a Path,
     file: File,
-    position: u64,
-    last_length: u64,
+    create_date: SystemTime,
 }
 
-impl Tail {
-    fn new<P: AsRef<Path>>(filename: P) -> io::Result<Tail> {
-        let mut file = File::open(filename)?;
-        let len = file.stream_len()?;
+impl Tail<'_> {
+    fn new<'a>(filename: &'a Path) -> io::Result<Tail<'a>> {
+        let file = File::open(filename)?;
         Ok(Tail {
+            create_date: file.metadata()?.created()?,
+            filename: filename.as_ref(),
             file,
-            position: 0,
-            last_length: len,
         })
     }
 
     fn read_lines(&mut self) -> io::Result<io::Lines<io::BufReader<File>>> {
-        // best effort check if the file was rolled back
-        let new_length = self.file.stream_len()?;
-        if new_length < self.last_length {
-            warn!("Detected logfile rollback, new length: {}, old length:{}", new_length, self.last_length);
-            self.last_length = new_length;
-            self.file.seek(io::SeekFrom::Start(0))?;
+        // check if the file was renamed and new recreated
+        let current_create_date = std::fs::metadata(self.filename)?.created()?;
+        if current_create_date != self.create_date {
+            warn!("Detected logfile rollback, new : {:?}, old :{:?}", current_create_date, self.create_date);
+            self.create_date = current_create_date;
+            self.file = File::open(self.filename)?;
         }
         let buf_reader = io::BufReader::new(self.file.try_clone()?);
         Ok(buf_reader.lines())
@@ -172,7 +169,7 @@ fn main() -> io::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     let log_path = "/home/tomas/workspaces/frinx/odl/autorelease/distribution/distribution-karaf/target/assembly/data/log/karaf.log";
-    let mut tail = Tail::new(log_path)?;
+    let mut tail = Tail::new(log_path.as_ref())?;
     // discard old logs
     get_last_log(&mut tail);
 
