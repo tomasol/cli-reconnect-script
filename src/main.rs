@@ -44,6 +44,24 @@ fn mount() {
     info!("mount ok");
 }
 
+fn unmount(tail: &mut Tail, level: log::Level) -> HashSet<LogResult> {
+    let output = Command::new("curl")
+        .args(&[
+            "-v", "-H", "Content-Type: application/json",
+            "admin:admin@localhost:8181/restconf/config/network-topology:network-topology/topology/cli/node/ME_CLI",
+            "-X", "DELETE"
+        ])
+        .output();
+    let output = output.unwrap();
+    assert!(
+        output.status.success(),
+        "Operation mount failed. {:?}",
+        output
+    );
+    log!(level, "unmount ok");
+    get_last_log(tail)
+}
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum LogResult {
     PromptResolved,
@@ -53,7 +71,6 @@ enum LogResult {
 
 fn get_last_log(tail: &mut Tail) -> HashSet<LogResult> {
     let lines = tail.read_lines().unwrap();
-
     let mut result = HashSet::new();
     for maybe_line in lines {
         if let Ok(line) = maybe_line {
@@ -87,35 +104,20 @@ fn wait_for_prompt(tail: &mut Tail) -> bool {
     false
 }
 
-fn unmount(tail: &mut Tail, level: log::Level) -> HashSet<LogResult> {
-    let output = Command::new("curl")
-        .args(&[
-            "-v", "-H", "Content-Type: application/json",
-            "admin:admin@localhost:8181/restconf/config/network-topology:network-topology/topology/cli/node/ME_CLI",
-            "-X", "DELETE"
-        ])
-        .output();
-    let output = output.unwrap();
-    assert!(
-        output.status.success(),
-        "Operation mount failed. {:?}",
-        output
-    );
-    log!(level, "unmount ok");
-    get_last_log(tail)
-}
-
 fn healthcheck(tail: &mut Tail) -> bool {
+    debug!("healthcheck");
     if wait_for_prompt(tail) {
         let now = SystemTime::now();
         let max_duration = Duration::from_secs(15);
         while now.elapsed().unwrap() < max_duration {
             if get_last_log(tail).contains(&LogResult::DeviceSuccessfullyMounted) {
+                info!("healthcheck ok");
                 return true;
             }
             thread::sleep(Duration::from_millis(10));
         }
     }
+    warn!("healthcheck - nok");
     false
 }
 
@@ -194,11 +196,7 @@ fn main() -> io::Result<()> {
             info!("Unmounted, executing healthcheck mount");
             // another mount with long wait to make sure we did not enter the race on previous line
             mount();
-            if healthcheck(&mut tail) {
-                info!("Healthcheck passed");
-            } else {
-                warn!("Healthcheck failed");
-            }
+            healthcheck(&mut tail);
             wait_for_unmount(&mut tail);
         }
     }
