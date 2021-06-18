@@ -2,6 +2,7 @@
 
 #[macro_use]
 extern crate log;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufRead, Seek};
 use std::path::Path;
@@ -43,51 +44,50 @@ fn mount() {
     info!("mount ok");
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 enum LogResult {
     PromptResolved,
     DeviceSuccessfullyMounted,
     OnDeviceDisconnected,
-    Unknown,
 }
 
-// FIXME: return vec<LogResult>
-fn get_last_log(tail: &mut Tail) -> LogResult {
+fn get_last_log(tail: &mut Tail) -> HashSet<LogResult> {
     let lines = tail.read_lines().unwrap();
 
-    let mut result = LogResult::Unknown;
+    let mut result = HashSet::new();
     for maybe_line in lines {
         if let Ok(line) = maybe_line {
             if line.contains("Mount point already exists") {
                 panic!("Found the error state");
             } else if line.contains("Device successfully mounted") {
-                result = LogResult::DeviceSuccessfullyMounted
+                result.insert(LogResult::DeviceSuccessfullyMounted);
             } else if line.contains("Prompt resolved") {
-                result = LogResult::PromptResolved
+                result.insert(LogResult::PromptResolved);
             } else if line.contains("Device state updated successfully: onDeviceDisconnected") {
-                result = LogResult::OnDeviceDisconnected
+                result.insert(LogResult::OnDeviceDisconnected);
             };
         }
     }
-    debug!("get_last_log - {:?}", result);
+    trace!("get_last_log - {:?}", result);
     result
 }
 
-fn wait_for_prompt(tail: &mut Tail) -> LogResult {
+fn wait_for_prompt(tail: &mut Tail) -> bool {
+    debug!("wait_for_prompt");
     let now = SystemTime::now();
     let max_duration = Duration::from_secs(15);
     while now.elapsed().unwrap() < max_duration {
-        if let LogResult::PromptResolved = get_last_log(tail) {
-            info!("wait_for_prompt - PromptResolved");
-            return LogResult::PromptResolved;
+        if get_last_log(tail).contains(&LogResult::PromptResolved) {
+            info!("wait_for_prompt - ok");
+            return true;
         }
         thread::sleep(Duration::from_millis(10));
     }
-    info!("wait_for_prompt - Unknown");
-    return LogResult::Unknown;
+    warn!("wait_for_prompt - nok");
+    false
 }
 
-fn unmount(tail: &mut Tail, level: log::Level) -> LogResult {
+fn unmount(tail: &mut Tail, level: log::Level) -> HashSet<LogResult> {
     let output = Command::new("curl")
         .args(&[
             "-v", "-H", "Content-Type: application/json",
@@ -106,27 +106,32 @@ fn unmount(tail: &mut Tail, level: log::Level) -> LogResult {
 }
 
 fn healthcheck(tail: &mut Tail) -> bool {
-    if let LogResult::PromptResolved = wait_for_prompt(tail) {
+    if wait_for_prompt(tail) {
         let now = SystemTime::now();
         let max_duration = Duration::from_secs(15);
         while now.elapsed().unwrap() < max_duration {
-            if let LogResult::DeviceSuccessfullyMounted = get_last_log(tail) {
+            if get_last_log(tail).contains(&LogResult::DeviceSuccessfullyMounted) {
                 return true;
             }
             thread::sleep(Duration::from_millis(10));
         }
     }
-    return false;
+    false
 }
 
-fn wait_for_unmount(tail: &mut Tail) {
+fn wait_for_unmount(tail: &mut Tail) -> bool {
+    debug!("wait_for_unmount");
     let now = SystemTime::now();
     let max_duration = Duration::from_secs(10);
-    while now.elapsed().unwrap() < max_duration
-        && unmount(tail, log::Level::Debug) != LogResult::OnDeviceDisconnected
-    {
+    while now.elapsed().unwrap() < max_duration  {
+        if unmount(tail, log::Level::Debug).contains(&LogResult::OnDeviceDisconnected) {
+            info!("wait_for_unmount - ok");
+            return true;
+        }
         thread::sleep(Duration::from_millis(10));
     }
+    warn!("wait_for_unmount - nok");
+    false
 }
 
 #[derive(Debug)]
@@ -137,11 +142,14 @@ struct Tail {
 }
 
 impl Tail {
-
     fn new<P: AsRef<Path>>(filename: P) -> io::Result<Tail> {
         let mut file = File::open(filename)?;
         let len = file.stream_len()?;
-        Ok(Tail { file,  position: 0, last_length: len })
+        Ok(Tail {
+            file,
+            position: 0,
+            last_length: len,
+        })
     }
 
     fn read_lines(&mut self) -> io::Result<io::Lines<io::BufReader<File>>> {
@@ -171,10 +179,10 @@ fn main() -> io::Result<()> {
             mount();
             sleep_duration += Duration::from_millis(10);
 
-            if let LogResult::PromptResolved = wait_for_prompt(&mut tail) {
+            if wait_for_prompt(&mut tail) {
                 info!("Will sleep {}ms", sleep_duration.as_millis());
                 thread::sleep(sleep_duration);
-                if  get_last_log(&mut tail) == LogResult::DeviceSuccessfullyMounted {
+                if get_last_log(&mut tail).contains(&LogResult::DeviceSuccessfullyMounted) {
                     // too late, restart from 0
                     sleep_duration = min_duration;
                 }
@@ -186,8 +194,11 @@ fn main() -> io::Result<()> {
             info!("Unmounted, executing healthcheck mount");
             // another mount with long wait to make sure we did not enter the race on previous line
             mount();
-            let healthcheck_result = healthcheck(&mut tail);
-            info!("Healthcheck passed?: {}", healthcheck_result);
+            if healthcheck(&mut tail) {
+                info!("Healthcheck passed");
+            } else {
+                warn!("Healthcheck failed");
+            }
             wait_for_unmount(&mut tail);
         }
     }
