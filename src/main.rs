@@ -152,7 +152,7 @@ impl Tail<'_> {
         })
     }
 
-    fn read_lines(&mut self) -> io::Result<io::Lines<io::BufReader<File>>> {
+    fn read_lines(&mut self) -> io::Result<io::Lines<io::BufReader<&mut File>>> {
         // check if the file was renamed and new recreated
         let current_create_date = std::fs::metadata(self.filename)?.created()?;
         if current_create_date != self.create_date {
@@ -160,7 +160,7 @@ impl Tail<'_> {
             self.create_date = current_create_date;
             self.file = File::open(self.filename)?;
         }
-        let buf_reader = io::BufReader::new(self.file.try_clone()?);
+        let buf_reader = io::BufReader::new(&mut self.file);
         Ok(buf_reader.lines())
     }
 }
