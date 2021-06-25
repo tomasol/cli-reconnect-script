@@ -69,18 +69,16 @@ enum LogResult {
 fn get_last_log(tail: &mut Tail) -> HashSet<LogResult> {
     let lines = tail.read_lines().unwrap();
     let mut result = HashSet::new();
-    for maybe_line in lines {
-        if let Ok(line) = maybe_line {
-            if line.contains("Mount point already exists") {
-                panic!("Found the error state");
-            } else if line.contains("Device successfully mounted") {
-                result.insert(LogResult::DeviceSuccessfullyMounted);
-            } else if line.contains("Prompt resolved") {
-                result.insert(LogResult::PromptResolved);
-            } else if line.contains("Device state updated successfully: onDeviceDisconnected") {
-                result.insert(LogResult::OnDeviceDisconnected);
-            };
-        }
+    for line in lines.flatten() {
+        if line.contains("Mount point already exists") {
+            panic!("Found the error state");
+        } else if line.contains("Device successfully mounted") {
+            result.insert(LogResult::DeviceSuccessfullyMounted);
+        } else if line.contains("Prompt resolved") {
+            result.insert(LogResult::PromptResolved);
+        } else if line.contains("Device state updated successfully: onDeviceDisconnected") {
+            result.insert(LogResult::OnDeviceDisconnected);
+        };
     }
     if !result.is_empty() {
         trace!("get_last_log - {:?}", result);
@@ -143,11 +141,11 @@ struct Tail<'a> {
 }
 
 impl Tail<'_> {
-    fn new<'a>(filename: &'a Path) -> io::Result<Tail<'a>> {
+    fn new(filename: &'_ Path) -> io::Result<Tail<'_>> {
         let file = File::open(filename)?;
         Ok(Tail {
             create_date: file.metadata()?.created()?,
-            filename: filename.as_ref(),
+            filename,
             file,
         })
     }
